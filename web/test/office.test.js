@@ -1,0 +1,237 @@
+// Roster gate + Tasks filters. Fixtures are the read-only seeds in ../docs (outside this repo).
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { StateStore, botIdFor } from '../lib/state.js';
+import {
+  OfficeGate, STATUS_ALIASES, taskView, sourceHash, lineKeys, canonicalBotName, clipStep,
+} from '../lib/office.js';
+
+const docs = path.resolve(import.meta.dirname, '../../../docs');
+const read = (name) => JSON.parse(fs.readFileSync(path.join(docs, name), 'utf8'));
+const roster = read('FEED-POST-roster.json').roster;
+const groups = read('FEED-POST-groups.json').groups;
+const ids = read('FEED-POST-ids.json').ids;
+const looks = read('FEED-POST-looks.json').looks;
+const aliasFile = read('STATUS-ALIASES.json').aliases;
+
+const NOW = Date.parse('2026-11-06T07:05:00Z');
+
+function setup(now = NOW) {
+  const store = new StateStore({ now: () => now, tz: 'Asia/Hong_Kong' });
+  const gate = new OfficeGate(store, { aliases: aliasFile });
+  return { store, gate };
+}
+
+function names(store) {
+  return Object.values(store.snapshot().bots).map((b) => b.name).sort();
+}
+
+test('alias map matches the seed file exactly', () => {
+  assert.deepEqual(STATUS_ALIASES, aliasFile);
+  assert.equal(canonicalBotName('DET 總管', aliasFile), 'GM · DET');
+  assert.equal(canonicalBotName('秘书组 · 成稿', aliasFile), 'Draft · Exec');
+  assert.equal(canonicalBotName('Kelly · Exec', aliasFile), 'Kelly · Exec');
+});
+
+test('alias + chronological latest: older legacy then newer canonical is one bot', () => {
+  const { store, gate } = setup();
+  gate.applyConfig('floor', groups);
+  gate.applyRoster(roster, '2026-11-06T00:00:00Z');
+  assert.equal(gate.applyStatus({ t: '2026-11-06T01:00:00Z', bot: 'DET 總管', status: 'working', step: 'legacy step' }), true);
+  assert.equal(gate.applyStatus({ t: '2026-11-06T02:00:00Z', bot: 'GM · DET', status: 'waiting_user', step: 'canonical step' }), true);
+  const st = store.snapshot();
+  const hits = Object.values(st.bots).filter((b) => b.name === 'GM · DET' || b.name === 'DET 總管');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].id, botIdFor('GM · DET'));
+  assert.equal(hits[0].name, 'GM · DET');
+  assert.equal(hits[0].status, 'waiting_user');
+  assert.equal(hits[0].step, 'canonical step');
+  assert.equal(st.feed[0].name, 'GM · DET');
+  assert.equal(st.feed[0].status, 'waiting_user');
+
+  // A later-arriving older line must not walk the status backwards.
+  assert.equal(gate.applyStatus({ t: '2026-11-06T01:30:00Z', bot: 'DET 總管', status: 'error', step: 'stale' }), false);
+  assert.equal(store.snapshot().bots[hits[0].id].status, 'waiting_user');
+  assert.equal(store.snapshot().bots[hits[0].id].step, 'canonical step');
+});
+
+test('unknown status is ignored and never materializes a bot', () => {
+  const { store, gate } = setup();
+  assert.equal(gate.applyStatus({ t: '2026-11-06T01:00:00Z', bot: 'Not A Person', status: 'working', step: 'nope' }), false);
+  assert.equal(store.bots.size, 0);
+  gate.applyConfig('floor', groups);
+  gate.applyRoster(roster, '2026-11-06T00:30:00Z');
+  const n = store.bots.size;
+  assert.equal(gate.applyStatus({ t: '2026-11-06T03:00:00Z', bot: 'Ghost Bot', status: 'working', step: 'still no' }), false);
+  assert.equal(store.bots.size, n);
+  assert.equal(names(store).includes('Not A Person'), false);
+  assert.equal(names(store).includes('Ghost Bot'), false);
+  assert.ok(gate.diagnostics.some((d) => d.name === 'Not A Person' && d.kind === 'status'));
+  assert.ok(gate.diagnostics.some((d) => d.name === 'Ghost Bot' && d.kind === 'status'));
+});
+
+test('roster-first alias merges, and a queued legacy line applies when the roster arrives', () => {
+  const first = setup();
+  first.gate.applyRoster(roster, '2026-11-06T00:00:00Z');
+  first.gate.applyConfig('floor', { '秘书组 · 成稿': 'Exec', 'Draft · Exec': 'Exec', 'DET Marketing': 'DET' });
+  assert.equal(first.gate.applyStatus({ t: '2026-11-06T01:00:00Z', bot: 'DET Marketing', status: 'working', step: 'ads' }), true);
+  const marketing = Object.values(first.store.snapshot().bots).filter((b) => b.name === 'Marketing · DET' || b.name === 'DET Marketing');
+  assert.equal(marketing.length, 1);
+  assert.equal(marketing[0].name, 'Marketing · DET');
+  assert.equal(marketing[0].status, 'working');
+  assert.equal(marketing[0].step, 'ads');
+  assert.equal(marketing[0].floor, 'det');
+  assert.equal(Object.keys(first.store.snapshot().bots).length, roster.length);
+
+  const queued = setup();
+  assert.equal(queued.gate.applyStatus({ t: '2026-11-06T01:00:00Z', bot: '秘书组 · 成稿', status: 'done', step: '稿好了' }), false);
+  assert.equal(queued.store.bots.size, 0, 'a legacy line before the roster does not invent a person');
+  queued.gate.applyConfig('floor', groups);
+  queued.gate.applyRoster(roster, '2026-11-06T02:00:00Z');
+  const draft = queued.store.snapshot().bots[botIdFor('Draft · Exec')];
+  assert.equal(draft.name, 'Draft · Exec');
+  assert.equal(draft.status, 'done');
+  assert.equal(draft.step, '稿好了');
+  assert.equal(draft.floor, 'exec');
+  assert.equal(queued.store.snapshot().feed.find((e) => e.name === 'Draft · Exec' && e.status === 'done').step, '稿好了');
+
+  // A later roster must not delete someone who already has a live status, and Main stays the top floor.
+  const kept = queued.store.snapshot().bots[botIdFor('Kelly · Exec')];
+  queued.gate.applyStatus({ t: '2026-11-06T03:00:00Z', bot: 'Kelly · Exec', status: 'working', step: 'still here' });
+  queued.gate.applyRoster(roster.filter((n) => n !== 'Kelly · Exec'), '2026-11-06T04:00:00Z');
+  const kelly = queued.store.snapshot().bots[botIdFor('Kelly · Exec')];
+  assert.ok(kelly, 'live status is kept when a later roster omits the name');
+  assert.equal(kelly.status, 'working');
+  assert.equal(kelly.step, 'still here');
+  assert.ok(kept);
+  const floors = queued.store.snapshot().floors;
+  const main = floors.find((f) => f.name === 'Main floor');
+  assert.equal(main.order, Math.max(...floors.map((f) => f.order)));
+});
+
+test('fixture roster is 35 people and the floors are 5/6/5/6/13', () => {
+  assert.equal(roster.length, 35);
+  assert.equal(Object.keys(ids).length, 35);
+  assert.equal(Object.keys(groups).length, 35);
+  for (const name of roster) {
+    assert.equal(groups[name] != null, true, name);
+    assert.equal(typeof ids[name], 'string', name);
+  }
+  const { store, gate } = setup();
+  gate.applyConfig('look', looks);
+  gate.applyConfig('floor', groups);
+  // A legacy look key merges onto the canonical bot and does not add a person.
+  gate.applyConfig('look', { 'DET 總管': { shape: 'sphere', color: '#000000', accessory: 'glasses' } });
+  gate.applyRoster(roster, '2026-11-06T00:00:00Z');
+  const st = store.snapshot();
+  assert.equal(Object.keys(st.bots).length, 35);
+  assert.equal(gate.roster.length, 35);
+  const byName = Object.fromEntries(st.floors.map((f) => [f.name, f.bots.length]));
+  assert.deepEqual(byName, {
+    'Main floor': 5,
+    'Black House': 6,
+    Exec: 5,
+    KVideo: 6,
+    DET: 13,
+  });
+  assert.equal(Object.values(byName).reduce((s, n) => s + n, 0), roster.length);
+  const main = st.floors.find((f) => f.name === 'Main floor');
+  assert.equal(main.order, Math.max(...st.floors.map((f) => f.order)), 'Main floor stays the top floor');
+  assert.equal(st.floors.filter((f) => f.bots.length).length, 5);
+  const gm = st.bots[botIdFor('GM · DET')];
+  assert.equal(gm.floor, 'general');
+  assert.equal(gm.look && gm.look.shape, 'sphere');
+  assert.equal(st.bots[botIdFor('Not A Person')], undefined);
+});
+
+test('Current, Needs input, and Recent filters follow fixture events', () => {
+  const { store, gate } = setup();
+  gate.applyConfig('floor', groups);
+  gate.applyRoster(roster, '2026-11-04T00:00:00Z');
+  gate.applyStatus({ t: '2026-11-06T07:00:00Z', bot: 'Kelly · Exec', status: 'working', step: 'weekly brief' });
+  gate.applyStatus({ t: '2026-11-06T06:50:00Z', bot: 'Michael · Black House', status: 'waiting_user', step: 'need a number' });
+  gate.applyStatus({ t: '2026-11-06T06:40:00Z', bot: 'HR · Exec', status: 'error', step: 'mailbox down' });
+  gate.applyStatus({ t: '2026-11-06T06:00:00Z', bot: 'Draft · Exec', status: 'done', step: '寄出成稿' });
+  gate.applyStatus({ t: '2026-11-03T00:00:00Z', bot: 'Verify · Exec', status: 'done', step: 'too old' });
+  const long = '步'.repeat(100);
+  gate.applyStatus({ t: '2026-11-06T06:10:00Z', bot: 'Butler · Exec', status: 'done', step: long });
+
+  const st = store.snapshot();
+  const rosterCount = gate.roster.length;
+  const current = taskView(st, { tab: 'current', now: NOW, rosterCount });
+  const needs = taskView(st, { tab: 'needs_input', now: NOW, rosterCount });
+  const recent = taskView(st, { tab: 'recent', now: NOW, rosterCount });
+
+  assert.deepEqual(current.rows.map((r) => r.name), ['Kelly · Exec']);
+  assert.equal(current.rows[0].badge, 'Working');
+  assert.equal(current.rows[0].status, 'working');
+  assert.deepEqual(needs.rows.map((r) => r.name).sort(), ['HR · Exec', 'Michael · Black House']);
+  assert.equal(needs.rows.find((r) => r.name === 'Michael · Black House').badge, 'Needs input');
+  assert.equal(needs.rows.find((r) => r.name === 'HR · Exec').badge, 'Error');
+  assert.equal(needs.rows.some((r) => /approv|批准/i.test(r.badge + r.step)), false);
+  const recentNames = recent.rows.map((r) => r.name);
+  assert.ok(recentNames.includes('Draft · Exec'));
+  assert.ok(recentNames.includes('Butler · Exec'));
+  assert.equal(recentNames.includes('Verify · Exec'), false, 'done older than 48 hours is not recent');
+  assert.equal(recentNames.includes('Kelly · Exec'), false);
+  assert.equal(recent.rows.find((r) => r.name === 'Butler · Exec').step, clipStep(long));
+  assert.equal(Array.from(recent.rows.find((r) => r.name === 'Butler · Exec').step).length, 80);
+  assert.equal(recent.rows.find((r) => r.name === 'Draft · Exec').step, '寄出成稿');
+  assert.equal(recent.rows.every((r) => r.badge === 'Done'), true);
+  assert.equal(current.stats, `${roster.length} assistants · 1 working · 2 need your input`);
+  assert.equal(current.source, 'Live statuses');
+  assert.equal(current.rows[0].time, '15:00');
+  assert.equal(needs.empty, 'No one needs your input.');
+});
+
+test('sourceHash and source id stay safe, and a cross-mailbox duplicate does not change the line', () => {
+  const msg = JSON.stringify({ bot: 'Kelly · Exec', status: 'working', step: 'a' });
+  const relay = { src: 'relay', id: 'm1', time: 1762412400, message: msg };
+  const ntfy = { src: 'ntfy', id: 'other-id', time: 1762412400, message: msg };
+  const original = (seen, l) => {
+    const a = `${l.src} ${l.id}`;
+    const b = `${l.time} ${l.message}`;
+    if (seen.has(a) || seen.has(b)) return false;
+    seen.add(a);
+    seen.add(b);
+    return true;
+  };
+  const lines = [
+    relay,
+    relay,
+    ntfy,
+    { src: 'ntfy', id: 'x', time: relay.time, message: '{"bot":"Kelly · Exec","status":"done","step":"b"}' },
+    { src: 'relay', id: 'm2', time: relay.time + 1, message: msg },
+  ];
+  const seen = new Set();
+  const { gate } = setup();
+  for (const line of lines) {
+    assert.equal(gate.acceptLine(line), original(seen, line));
+  }
+  assert.equal(lineKeys(relay).hash, sourceHash('relay', 'm1', '1762412400', msg));
+  assert.equal(sourceHash('relay', 'm1', 1762412400, msg), sourceHash('relay', 'm1', 1762412400, msg));
+  assert.notEqual(sourceHash('relay', 'm1', 1762412400, msg), sourceHash('ntfy', 'm1', 1762412400, msg));
+  assert.equal(sourceHash('relay', { evil: 'id' }, null, undefined), sourceHash('relay', { other: true }, undefined, null));
+  assert.doesNotThrow(() => sourceHash(undefined, Object.create(null), Symbol('x'), 1));
+  assert.equal(gate.acceptLine({ src: 'relay', id: '__proto__', time: 1, message: '{}' }), true);
+  assert.equal(gate.acceptLine({ src: 'relay', id: '__proto__', time: 2, message: '{"b":1}' }), false);
+
+  const once = setup();
+  once.gate.applyConfig('floor', groups);
+  once.gate.applyRoster(roster, '2026-11-06T00:00:00Z');
+  const line = { src: 'relay', id: '1', time: Date.parse('2026-11-06T06:00:00Z') / 1000, message: msg };
+  assert.equal(once.gate.acceptLine(line), true);
+  once.gate.applyStatus({ t: new Date(line.time * 1000).toISOString(), bot: 'Kelly · Exec', status: 'working', step: 'a' });
+  const snap = once.store.snapshot();
+  const id = botIdFor('Kelly · Exec');
+  const history = snap.bots[id].history.length;
+  const status = snap.bots[id].status;
+  assert.equal(once.gate.acceptLine({ src: 'ntfy', id: '9', time: line.time, message: msg }), false);
+  const again = once.store.snapshot();
+  assert.equal(again.bots[id].history.length, history);
+  assert.equal(again.bots[id].status, status);
+  assert.equal(again.bots[id].step, 'a');
+  assert.equal(again.feed.filter((e) => e.bot === id && e.step === 'a').length, 1);
+});

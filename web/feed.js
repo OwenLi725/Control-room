@@ -21,6 +21,7 @@
 // state.routines (every bot's routines, soonest first) and state.check (the latest status check: who has answered), for
 // the «Finished», «Routines» and «Status check» panels.
 import { StateStore, botIdFor } from './lib/state.js';
+import { OfficeGate } from './lib/office.js';
 import { FEED_BASE, feedFromLink } from './lib/feedbase.js';
 
 const RELAY = 'https://relay.0xcodila.com', NTFY = 'https://ntfy.sh';
@@ -46,11 +47,11 @@ export async function connectFeed({ topic, servers }, onState) {
   const oldKey = `bothq.feed.${NTFY}.${topic}`;         // the cache of the first single-mailbox office (ntfy.sh only)
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Sofia';
   const store = new StateStore({ tz, quietIdleMs: QUIET_MS, hasAvatar: (id) => HANDMADE.has(id) });   // no GLB probe: every bot is generated from its look
-  const cfg = {};                                        // per bot name: { look, chat_url } -> the store's bots config
+  const debug = /(?:^|[?&])debug(?:[=&]|$)/.test(searchOf());
+  const gate = new OfficeGate(store, { debug });        // alias, then roster: unknown names never become bots
   const routines = new Map();                            // bot id -> { name, items }
   let check = null;                                      // the latest status check: { ms, names }
   let lines = [], saveTimer = 0;
-  const seen = new Set();
 
   lines = cached(cacheKey).map((l) => ({ ...l, src: l.src || sources[0].tag }));
   if (usual) lines.push(...cached(oldKey).map((l) => ({ ...l, src: l.src || 'ntfy' })));
@@ -66,7 +67,7 @@ export async function connectFeed({ topic, servers }, onState) {
   save();
   if (usual) try { localStorage.removeItem(oldKey); } catch { /* private mode */ }
   publish();
-  const bots = Object.values(cfg);
+  const bots = Object.values(gate.cfg);
   beacon(topic, { bots: store.bots.size, floors: new Set(bots.map((c) => c.floor).filter(Boolean)).size, tags: new Set(lines.map((l) => l.src)),
     has: { usage: lines.some((l) => typeof l.message === 'string' && l.message.includes('"usage"')), routines: routines.size > 0,
       chat: bots.some((c) => c.chat_url), teams: bots.some((c) => c.floor) } });
@@ -77,12 +78,7 @@ export async function connectFeed({ topic, servers }, onState) {
   function cached(key) {
     try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; }
   }
-  function fresh(l) {                                    // once per mailbox id, and once per (time, text) across mailboxes
-    const a = `${l.src} ${l.id}`, b = `${l.time} ${l.message}`;
-    if (seen.has(a) || seen.has(b)) return false;
-    seen.add(a).add(b);
-    return true;
-  }
+  function fresh(l) { return gate.acceptLine(l); }       // mailbox id, or the same second + text from the other mailbox
   function keep(s, m) {                                  // a message of a history request, into `lines`
     if (m?.event === 'message' && typeof m.id === 'string') lines.push({ id: m.id, time: Number(m.time) || 0, message: m.message, src: s.tag });
   }
@@ -132,32 +128,14 @@ export async function connectFeed({ topic, servers }, onState) {
     if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return false;
     const t = typeof rec.t === 'string' ? rec.t : new Date(time * 1000).toISOString();
     if (Array.isArray(rec.roster)) {
-      for (const name of rec.roster.slice(0, 400)) {
-        if (typeof name === 'string' && name.trim() && !store.bots.has(botIdFor(name))) store.apply({ t, bot: name, status: 'idle', step: '', listed: true }, { replay });
-      }
+      gate.applyRoster(rec.roster, t, replay);            // missing names idle; a live bot is not removed
       return true;
     }
-    if (isMap(rec.looks)) {
-      for (const [name, look] of Object.entries(rec.looks).slice(0, 400)) (cfg[name] ||= {}).look = look;
-      store.setBotsConfig(cfg);
-      return true;
-    }
-    if (isMap(rec.groups)) {                             // {"groups":{"Bot A":"Content"}}: the main bot's teams = floors
-      for (const [name, team] of Object.entries(rec.groups).slice(0, 400)) {
-        if (typeof team === 'string' && team.trim()) (cfg[name] ||= {}).floor = team.trim().slice(0, 40);
-      }
-      store.setBotsConfig(cfg);
-      return true;
-    }
-    if (isMap(rec.chat)) {                               // only app deep links and web pages (the store refuses scripts)
-      for (const [name, url] of Object.entries(rec.chat).slice(0, 400)) {
-        if (typeof url === 'string' && /^(grokbot|https):\/\//i.test(url.trim())) (cfg[name] ||= {}).chat_url = url.trim();
-      }
-      store.setBotsConfig(cfg);
-      return true;
-    }
+    if (isMap(rec.looks)) return gate.applyConfig('look', rec.looks);
+    if (isMap(rec.groups)) return gate.applyConfig('floor', rec.groups);   // teams, one floor each
+    if (isMap(rec.chat)) return gate.applyConfig('chat', rec.chat);        // app links and https only
     if (isMap(rec.routines)) {
-      const name = typeof rec.routines.bot === 'string' ? rec.routines.bot.trim().slice(0, 80) : '';
+      const name = gate.canonical(typeof rec.routines.bot === 'string' ? rec.routines.bot : '').slice(0, 80);
       if (!name || !Array.isArray(rec.routines.items)) return false;
       const items = rec.routines.items.slice(0, 50).filter(isMap).map((r) => ({
         routine: String(r.name ?? '').slice(0, 80), schedule: String(r.schedule ?? '').slice(0, 80),
@@ -168,11 +146,24 @@ export async function connectFeed({ topic, servers }, onState) {
     }
     if (isMap(rec.check)) {                              // the setup bot asks every bot for a status line: who answers?
       const names = (Array.isArray(rec.check.bots) ? rec.check.bots : []).filter((n) => typeof n === 'string' && n.trim())
-        .slice(0, 400).map((n) => n.trim().slice(0, 80));
+        .slice(0, 400).map((n) => gate.canonical(n).slice(0, 80)).filter(Boolean);
       if (!names.length) return false;
       const ms = Number.isFinite(Date.parse(t)) ? Date.parse(t) : time * 1000;
       if (!check || ms >= check.ms) check = { ms, names };
       return true;
+    }
+    const type = typeof rec.type === 'string' ? rec.type.toLowerCase() : '';
+    if (type === 'usage' && isMap(rec.bots)) {
+      const bots = {};
+      for (const [k, v] of Object.entries(rec.bots)) {
+        const name = gate.canonical(k);
+        if (name) bots[name] = v;
+      }
+      rec = { ...rec, bots };
+    }
+    if (type === 'schedule' && typeof rec.bot === 'string') rec = { ...rec, bot: gate.canonical(rec.bot) };
+    if ((!type || type === 'activity' || type === 'event') && typeof rec.bot === 'string') {
+      return gate.applyStatus({ ...rec, t }, replay);     // alias first; unknown names stay diagnostics
     }
     store.apply({ ...rec, t }, { replay });
     return true;
@@ -186,9 +177,14 @@ export async function connectFeed({ topic, servers }, onState) {
       let rec;
       try { rec = JSON.parse(l.message); } catch { continue; }
       if (rec?.status !== 'done' || typeof rec.bot !== 'string') continue;
-      finished.push({ t: typeof rec.t === 'string' ? rec.t : new Date(l.time * 1000).toISOString(), bot: botIdFor(rec.bot), name: rec.bot.slice(0, 80), step: String(rec.step ?? '').slice(0, 80) });
+      const name = gate.canonical(rec.bot).slice(0, 80);
+      if (!name) continue;
+      finished.push({ t: typeof rec.t === 'string' ? rec.t : new Date(l.time * 1000).toISOString(), bot: botIdFor(name), name, step: String(rec.step ?? '').slice(0, 80) });
     }
     s.finished = finished;
+    s.rosterCount = gate.roster ? gate.roster.length : 0;
+    s.feedAt = gate.feedAt;
+    if (gate.debug) s.diagnostics = gate.diagnostics.slice();
     s.routines = [...routines].flatMap(([bot, { name, items }]) => items.map((r) => ({ bot, name, ...r })))
       .sort((a, b) => (a.next_run ? Date.parse(a.next_run) : Infinity) - (b.next_run ? Date.parse(b.next_run) : Infinity));
     s.check = check && Date.now() - check.ms < CHECK_MS ? {
@@ -225,3 +221,7 @@ async function beacon(topic, { bots, floors, tags, has }) {
 }
 
 function isMap(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+
+function searchOf() {
+  try { return globalThis.location?.search || ''; } catch { return ''; }
+}
