@@ -1,15 +1,11 @@
 # Builds the Mac app (mac/) on a macOS runner: a universal, ad-hoc signed "Grok Bot Wallpaper.app" inside
 # GrokBotWallpaper.dmg. Every build keeps the .dmg as a workflow artifact (Actions → run → Artifacts).
-# A tag like mac-v1.0 also publishes it as a release, so the site can link to
-# https://github.com/Bodila51/grokbot-wallpaper/releases/latest/download/GrokBotWallpaper.dmg
+# A tag like mac-v1.0 also publishes it as a release.
+# A push to main does not start this build and does not publish a tag release.
 name: Mac app
 on:
   push:
-    branches: [main]
-    paths: ['mac/**', '.github/workflows/mac.yml']
     tags: ['mac-v*']
-  pull_request:
-    paths: ['mac/**', '.github/workflows/mac.yml']
   workflow_dispatch:
 permissions:
   contents: write

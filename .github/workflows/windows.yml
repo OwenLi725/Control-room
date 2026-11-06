@@ -1,7 +1,6 @@
 # Publishes the public Lively package (lively/dist/grokbot-wallpaper-windows.zip, made by lively/build-public.ps1) as a
-# release for a tag like windows-v1.0, so GitHub counts its downloads next to the Mac .dmg's. The site links to
-# https://github.com/Bodila51/grokbot-wallpaper/releases/download/<tag>/grokbot-wallpaper-windows.zip
-# Not marked latest: .../releases/latest/download/GrokBotWallpaper.dmg must keep finding the Mac release.
+# release for a tag like windows-v1.0. Not marked latest, so a Mac release can keep that slot.
+# A push to main does not start this workflow and does not publish a tag release.
 name: Windows package
 on:
   push:

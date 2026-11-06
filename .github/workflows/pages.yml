@@ -1,8 +1,6 @@
-# Publishes the Grok Bot wallpaper site to GitHub Pages on every push to main:
-# https://bodila51.github.io/grokbot-wallpaper/        the landing page (landing/), with the live wallpaper in it
-# https://bodila51.github.io/grokbot-wallpaper/face/   the wallpaper itself with its demo data (installed wallpapers
-# point here and pick up every change by themselves). landing/assemble.mjs lists what goes out (no journal, keys or
-# source art); the same tree is deployed to https://0xcodila.com/grokbot-wallpaper/, the landing's main address.
+# Publishes this repository's static site to GitHub Pages on every push to main.
+# The only build command is `node landing/assemble.mjs _site` (landing, face, and office).
+# A push to main does not build the Mac app or publish a Windows or Mac release.
 name: Pages
 on:
   push:
