@@ -3,7 +3,6 @@
  *   top-left   brand + live clock         top-center  status counters        top-right  DEMO + usage meter
  *   left       floors "elevator"          right       floor team / bot card
  *   left, under the floors   dock: Status check (while one runs) / Waiting on me / Finished / Routines
- *   bottom center   Tasks dock, collapsed until opened (Current / Needs input / Recent)
  *   bottom-left activity feed (last 4)    bottom-right (left of the card)  zoom - / +
  *
  *   initUI({ onSelectBot, onSelectFloor, onZoom, onOpenChat })
@@ -21,13 +20,10 @@
  *
  * Phones (<= 600 px wide, and landscape phones): <html> gets .bhq-phone (+ .bhq-land). The floors become a chip row,
  * and the floor team, "Waiting on me", Finished, Routines and the activity feed move into one bottom sheet (a grabber, a
- * peek with the floor name and counts, a spring snap between peek and ~60% of the height); the Tasks dock parks in the
- * peek on portrait phones so the collapsed entrance stays hittable outside the inert closed sheet body; the bot card
+ * peek with the floor name and counts, a spring snap between peek and ~60% of the height); the bot card
  * becomes a sheet of its own (swipe down or x to close). Landscape: the sheet is a side column. Desktop is untouched:
  * the same nodes move back when the window grows. ?sheet=open starts with the sheet expanded (for screenshots).
  */
-
-import { taskView } from '../lib/office.js';
 
 // Resolved against this file, so it works from /web/index.html, from a server rooted at web/, and from the harness.
 const THUMB_BASE = new URL('../../assets/blobs/thumbs/', import.meta.url).href;
@@ -100,7 +96,7 @@ let U = null; // set by initUI
 function freshState(handlers) {
   return {
     h: handlers || {},
-    top: null, fl: null, panel: null, feed: null, zoom: null, dock: null, tasks: null, owned: [],
+    top: null, fl: null, panel: null, feed: null, zoom: null, dock: null, owned: [],
     last: { state: null, opts: { currentFloor: null, selectedBot: null } },
     skew: 0, nowStr: null,
     floors: new Map(), activeFloorId: null,
@@ -463,7 +459,6 @@ export function initUI(handlers) {
   buildFeed(feed);
   buildZoom();
   buildDock(floors, feed);
-  buildTasks();
   buildSheet(feed);
   watchPhone();
 
@@ -906,9 +901,9 @@ function buildSheet(feed) {
     sheetGo(S.y + project(v) < S.travel / 2, v);
   };
 
-  // drag or tap the grabber / the peek (not the Tasks entrance parked in the peek)
+  // drag or tap the grabber / the peek
   onDragY(peek, {
-    can: (e) => U.phone && !U.land && !(e && e.target && e.target.closest && e.target.closest('.bhq-tasks')),
+    can: (e) => U.phone && !U.land,
     begin: () => { if (S.cancel) { S.cancel(); S.cancel = null; } S.busy = true; return S.y; },
     move,
     end,
@@ -1053,9 +1048,7 @@ function setPhone(on, land) {
   html.classList.toggle('bhq-land', U.land);
   if (on && !was) {
     if (p) S.headSlot.append(p.teamHead);
-    // Tasks is placed by placePhoneTasks (peek on portrait), not into the inert closed body.
     S.body.append(...[d && d.waiting.root, p && p.tcard, d && d.finished.root, d && d.routines.root, S.feed].filter(Boolean));
-    placePhoneTasks();
     S.open = S.start || U.land;
     S.start = false;
     sheetMeasure();
@@ -1068,14 +1061,12 @@ function setPhone(on, land) {
     S.body.inert = false;
     cardReset();
     if (d) d.root.append(d.waiting.root, d.finished.root, d.routines.root);
-    if (U.tasks) document.body.append(U.tasks.root);
     if (p) p.team.append(p.teamHead, p.tcard);
     if (S.feed) { if (d && d.root.parentNode) d.root.parentNode.insertBefore(S.feed, d.root); else document.body.append(S.feed); }
     for (const k of Object.keys(rootVars)) document.documentElement.style.removeProperty(k);
     rootVars = {};
   } else if (on) {
     if (U.land) S.open = true;
-    placePhoneTasks();
     sheetMeasure();
     sheetGo(S.open, 0, true);
   }
@@ -1084,140 +1075,8 @@ function setPhone(on, land) {
   if (on && U.last.state) centerChip(U.activeFloorId);
 }
 
-// On portrait phones, park Tasks in the sheet peek so the collapsed entrance stays in the
-// viewport and outside the inert closed .bhq-sbody (which is translated off-screen).
-// Landscape keeps Tasks in the always-open side-column body. Desktop leaves it on document.body.
-function placePhoneTasks() {
-  const t = U && U.tasks;
-  const S = U && U.sh;
-  if (!t || !S) return;
-  if (U.phone && !U.land) {
-    if (t.root.parentNode !== S.peek) S.peek.append(t.root);
-  } else if (U.phone && U.land) {
-    if (t.root.parentNode !== S.body) S.body.prepend(t.root);
-  } else if (t.root.parentNode !== document.body) {
-    document.body.append(t.root);
-  }
-}
-
 // for tests and the harness: ?sheet=open does the same at load
 export function setSheetOpen(open) { sheetGo(!!open, 0, true); }
-
-/* ------------------------------------------------------------------ tasks dock: collapsed until opened */
-
-const TASK_TABS = [
-  ['current', 'Current'],
-  ['needs_input', 'Needs input'],
-  ['recent', 'Recent'],
-];
-
-function rosterCountOf(state) {
-  if (state && Number.isFinite(state.rosterCount)) return state.rosterCount;
-  return Object.keys((state && state.bots) || {}).length;
-}
-
-function buildTasks() {
-  const stats = h('span', { class: 'bhq-tasks-stats' });
-  const meta = h('span', { class: 'bhq-tasks-meta', text: 'Tasks & Decisions · 任务与決策' });
-  const toggle = h('button', { class: 'bhq-tasks-toggle', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'bhq-tasks-panel' },
-    h('span', { class: 'bhq-tasks-title', text: 'Tasks' }), meta, stats);
-  toggle.append(svg(ICON.chev));
-  const tabs = TASK_TABS.map(([id, label]) => {
-    const btn = h('button', { class: 'bhq-tasks-tab', type: 'button', role: 'tab', id: 'bhq-tab-' + id, 'aria-selected': 'false', 'aria-controls': 'bhq-tasks-panel', text: label });
-    btn.addEventListener('click', () => pickTaskTab(id));
-    return { id, btn };
-  });
-  const tablist = h('div', { class: 'bhq-tasks-tabs', role: 'tablist', 'aria-label': 'Task filters' }, ...tabs.map((t) => t.btn));
-  const list = h('div', { class: 'bhq-tasks-list', role: 'list' });
-  const empty = h('p', { class: 'bhq-note bhq-tasks-empty', hidden: true });
-  const note = h('p', { class: 'bhq-tasks-note', text: 'Live statuses' });
-  const body = h('div', { class: 'bhq-tasks-body', id: 'bhq-tasks-panel', role: 'tabpanel', hidden: true }, tablist, list, empty, note);
-  const root = own(h('section', { class: 'bhq-tasks bhq-surface', 'aria-label': 'Tasks' }, toggle, body));
-  document.body.append(root);
-  toggle.addEventListener('click', toggleTasks);
-  U.tasks = { root, toggle, stats, body, list, empty, note, tabs, open: false, tab: 'current', hit: null, sig: '', pendingFocus: null };
-}
-
-function toggleTasks() {
-  const t = U.tasks;
-  t.open = !t.open;
-  if (!t.open) t.pendingFocus = null;
-  const state = U.last && U.last.state;
-  if (!state) { paintTasksOpen(); if (U.phone && !U.land) sheetMeasure(); return; }
-  renderTasks(state);
-  if (U.panel) renderPanel(state, U.last.opts);
-  // Opening/closing Tasks in the peek changes peek height; remeasure travel/vis.
-  if (U.phone && !U.land) sheetMeasure();
-}
-
-function pickTaskTab(tab) {
-  const t = U.tasks;
-  t.tab = tab;
-  t.open = true;
-  const state = U.last && U.last.state;
-  if (!state) { paintTasksOpen(); return; }
-  const view = taskView(state, { tab, now: nowMs(), rosterCount: rosterCountOf(state) });
-  const first = view.rows[0];
-  if (first && U.h.onSelectBot) {
-    t.pendingFocus = first.id;
-    U.h.onSelectBot(first.id);
-    return;
-  }
-  renderTasks(state);
-  if (U.panel) renderPanel(state, U.last.opts);
-}
-
-function openTask(id) {
-  if (!id) return;
-  U.tasks.pendingFocus = id;
-  if (U.h.onSelectBot) U.h.onSelectBot(id);
-}
-
-function paintTasksOpen() {
-  const t = U.tasks;
-  setCls(t.root, 'is-open', t.open);
-  setAttr(t.toggle, 'aria-expanded', t.open ? 'true' : 'false');
-  setHidden(t.body, !t.open);
-  t.body.inert = !t.open;
-}
-
-function taskRow(row) {
-  const btn = h('button', {
-    class: 'bhq-tasks-row', type: 'button', role: 'listitem', 'data-id': row.id,
-    'aria-label': row.name + ', ' + row.badge + (row.step ? ', ' + row.step : '') + (row.time ? ', ' + row.time + ' Hong Kong time' : ''),
-  },
-  h('b', { class: 'bhq-tasks-who', text: row.name }),
-  h('span', { class: 'bhq-tasks-badge', 'data-s': row.status, text: row.badge }),
-  h('time', { class: 'bhq-tasks-time', text: row.time }),
-  h('span', { class: 'bhq-tasks-step', text: row.step, title: row.step || null }));
-  btn.addEventListener('click', () => openTask(row.id));
-  return btn;
-}
-
-function renderTasks(state) {
-  const t = U.tasks;
-  if (!t) return;
-  const view = taskView(state, { tab: t.tab, now: nowMs(), rosterCount: rosterCountOf(state) });
-  setText(t.stats, view.stats);
-  t.hit = t.open && view.rows.length ? new Set(view.rows.map((r) => r.id).filter(Boolean)) : null;
-  for (const tab of t.tabs) {
-    const on = tab.id === t.tab;
-    setAttr(tab.btn, 'aria-selected', on ? 'true' : 'false');
-    setCls(tab.btn, 'is-on', on);
-  }
-  setAttr(t.body, 'aria-labelledby', 'bhq-tab-' + t.tab);
-  paintTasksOpen();
-  const sig = view.rows.map((r) => [r.id, r.status, r.step, r.time].join('|')).join('\n');
-  if (sig !== t.sig) {
-    t.sig = sig;
-    const top = t.list.scrollTop;
-    t.list.textContent = '';
-    for (const row of view.rows) t.list.append(taskRow(row));
-    t.list.scrollTop = top;
-  }
-  setText(t.empty, view.empty);
-  setHidden(t.empty, view.rows.length > 0);
-}
 
 /* ------------------------------------------------------------------ render */
 
@@ -1234,7 +1093,6 @@ export function renderUI(state, opts) {
 
   safe('topbar', () => U.top && renderTopbar(state));
   safe('floors', () => U.fl && renderFloors(state, o));
-  safe('tasks', () => U.tasks && renderTasks(state));
   safe('panel', () => U.panel && renderPanel(state, o));
   safe('feed', () => U.feed && renderFeed(state));
   safe('dock', () => U.dock && renderDock(state));
@@ -1513,17 +1371,6 @@ function renderTeam(state, floor, o) {
     setText(c.seen, seenAt == null ? '–' : relShort(seenAt));
     setAttr(c.seen, 'title', seenAt == null ? 'No status line yet' : 'Last status line ' + relAgo(seenAt) + ' (' + hhmm(seenAt) + ')');
     setAttr(c.btn, 'data-s', s);
-    const hit = U.tasks && U.tasks.open ? U.tasks.hit : null;
-    setCls(c.btn, 'is-task-hit', !!(hit && hit.has(id)));
-    setCls(c.btn, 'is-task-dim', !!(hit && !hit.has(id)));
-    if (U.tasks && U.tasks.pendingFocus === id) {
-      U.tasks.pendingFocus = null;
-      // On phones, skip scrollIntoView: scrolling the sheet body can push the Tasks dock
-      // (parked in the peek / first in the column) out of the sheet viewport.
-      if (!U.phone) {
-        try { c.btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* the card is not on screen yet */ }
-      }
-    }
     setAttr(c.btn, 'aria-label', (bot.name || id) + ', ' + statusLabel(s) + ', ' + seenText(bot));
     setAttr(c.btn, 'title', (bot.name || id) + ': ' + statusLabel(s) + (bot.step ? '. ' + bot.step : '') + ' · ' + seenText(bot));
     return c.btn;

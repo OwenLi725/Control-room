@@ -1,11 +1,11 @@
-// Roster gate + Tasks filters. Fixtures are the read-only seeds in ../docs (outside this repo).
+// Roster gate. Fixtures are the read-only seeds in ../docs (outside this repo).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StateStore, botIdFor } from '../lib/state.js';
 import {
-  OfficeGate, STATUS_ALIASES, taskView, sourceHash, lineKeys, canonicalBotName, clipStep,
+  OfficeGate, STATUS_ALIASES, sourceHash, lineKeys, canonicalBotName,
 } from '../lib/office.js';
 
 const docs = path.resolve(import.meta.dirname, '../../../docs');
@@ -144,46 +144,6 @@ test('fixture roster is 35 people and the floors are 5/6/5/6/13', () => {
   assert.equal(gm.floor, 'general');
   assert.equal(gm.look && gm.look.shape, 'sphere');
   assert.equal(st.bots[botIdFor('Not A Person')], undefined);
-});
-
-test('Current, Needs input, and Recent filters follow fixture events', () => {
-  const { store, gate } = setup();
-  gate.applyConfig('floor', groups);
-  gate.applyRoster(roster, '2026-11-04T00:00:00Z');
-  gate.applyStatus({ t: '2026-11-06T07:00:00Z', bot: 'Kelly · Exec', status: 'working', step: 'weekly brief' });
-  gate.applyStatus({ t: '2026-11-06T06:50:00Z', bot: 'Michael · Black House', status: 'waiting_user', step: 'need a number' });
-  gate.applyStatus({ t: '2026-11-06T06:40:00Z', bot: 'HR · Exec', status: 'error', step: 'mailbox down' });
-  gate.applyStatus({ t: '2026-11-06T06:00:00Z', bot: 'Draft · Exec', status: 'done', step: '寄出成稿' });
-  gate.applyStatus({ t: '2026-11-03T00:00:00Z', bot: 'Verify · Exec', status: 'done', step: 'too old' });
-  const long = '步'.repeat(100);
-  gate.applyStatus({ t: '2026-11-06T06:10:00Z', bot: 'Butler · Exec', status: 'done', step: long });
-
-  const st = store.snapshot();
-  const rosterCount = gate.roster.length;
-  const current = taskView(st, { tab: 'current', now: NOW, rosterCount });
-  const needs = taskView(st, { tab: 'needs_input', now: NOW, rosterCount });
-  const recent = taskView(st, { tab: 'recent', now: NOW, rosterCount });
-
-  assert.deepEqual(current.rows.map((r) => r.name), ['Kelly · Exec']);
-  assert.equal(current.rows[0].badge, 'Working');
-  assert.equal(current.rows[0].status, 'working');
-  assert.deepEqual(needs.rows.map((r) => r.name).sort(), ['HR · Exec', 'Michael · Black House']);
-  assert.equal(needs.rows.find((r) => r.name === 'Michael · Black House').badge, 'Needs input');
-  assert.equal(needs.rows.find((r) => r.name === 'HR · Exec').badge, 'Error');
-  assert.equal(needs.rows.some((r) => /approv|批准/i.test(r.badge + r.step)), false);
-  const recentNames = recent.rows.map((r) => r.name);
-  assert.ok(recentNames.includes('Draft · Exec'));
-  assert.ok(recentNames.includes('Butler · Exec'));
-  assert.equal(recentNames.includes('Verify · Exec'), false, 'done older than 48 hours is not recent');
-  assert.equal(recentNames.includes('Kelly · Exec'), false);
-  assert.equal(recent.rows.find((r) => r.name === 'Butler · Exec').step, clipStep(long));
-  assert.equal(Array.from(recent.rows.find((r) => r.name === 'Butler · Exec').step).length, 80);
-  assert.equal(recent.rows.find((r) => r.name === 'Draft · Exec').step, '寄出成稿');
-  assert.equal(recent.rows.every((r) => r.badge === 'Done'), true);
-  assert.equal(current.stats, `${roster.length} assistants · 1 working · 2 need your input`);
-  assert.equal(current.source, 'Live statuses');
-  assert.equal(current.rows[0].time, '15:00');
-  assert.equal(needs.empty, 'No one needs your input.');
 });
 
 test('sourceHash and source id stay safe, and a cross-mailbox duplicate does not change the line', () => {
