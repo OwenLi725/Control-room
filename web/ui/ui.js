@@ -21,9 +21,10 @@
  *
  * Phones (<= 600 px wide, and landscape phones): <html> gets .bhq-phone (+ .bhq-land). The floors become a chip row,
  * and the floor team, "Waiting on me", Finished, Routines and the activity feed move into one bottom sheet (a grabber, a
- * peek with the floor name and counts, a spring snap between peek and ~60% of the height); the bot card becomes a sheet
- * of its own (swipe down or x to close). Landscape: the sheet is a side column. Desktop is untouched: the same nodes move
- * back when the window grows. ?sheet=open starts with the sheet expanded (for screenshots).
+ * peek with the floor name and counts, a spring snap between peek and ~60% of the height); the Tasks dock parks in the
+ * peek on portrait phones so the collapsed entrance stays hittable outside the inert closed sheet body; the bot card
+ * becomes a sheet of its own (swipe down or x to close). Landscape: the sheet is a side column. Desktop is untouched:
+ * the same nodes move back when the window grows. ?sheet=open starts with the sheet expanded (for screenshots).
  */
 
 import { taskView } from '../lib/office.js';
@@ -905,9 +906,9 @@ function buildSheet(feed) {
     sheetGo(S.y + project(v) < S.travel / 2, v);
   };
 
-  // drag or tap the grabber / the peek
+  // drag or tap the grabber / the peek (not the Tasks entrance parked in the peek)
   onDragY(peek, {
-    can: () => U.phone && !U.land,
+    can: (e) => U.phone && !U.land && !(e && e.target && e.target.closest && e.target.closest('.bhq-tasks')),
     begin: () => { if (S.cancel) { S.cancel(); S.cancel = null; } S.busy = true; return S.y; },
     move,
     end,
@@ -1052,8 +1053,9 @@ function setPhone(on, land) {
   html.classList.toggle('bhq-land', U.land);
   if (on && !was) {
     if (p) S.headSlot.append(p.teamHead);
-    const taskNode = U.tasks && U.tasks.root;
-    S.body.append(...[taskNode, d && d.waiting.root, p && p.tcard, d && d.finished.root, d && d.routines.root, S.feed].filter(Boolean));
+    // Tasks is placed by placePhoneTasks (peek on portrait), not into the inert closed body.
+    S.body.append(...[d && d.waiting.root, p && p.tcard, d && d.finished.root, d && d.routines.root, S.feed].filter(Boolean));
+    placePhoneTasks();
     S.open = S.start || U.land;
     S.start = false;
     sheetMeasure();
@@ -1073,12 +1075,29 @@ function setPhone(on, land) {
     rootVars = {};
   } else if (on) {
     if (U.land) S.open = true;
+    placePhoneTasks();
     sheetMeasure();
     sheetGo(S.open, 0, true);
   }
   layoutDock();
   updateFades();
   if (on && U.last.state) centerChip(U.activeFloorId);
+}
+
+// On portrait phones, park Tasks in the sheet peek so the collapsed entrance stays in the
+// viewport and outside the inert closed .bhq-sbody (which is translated off-screen).
+// Landscape keeps Tasks in the always-open side-column body. Desktop leaves it on document.body.
+function placePhoneTasks() {
+  const t = U && U.tasks;
+  const S = U && U.sh;
+  if (!t || !S) return;
+  if (U.phone && !U.land) {
+    if (t.root.parentNode !== S.peek) S.peek.append(t.root);
+  } else if (U.phone && U.land) {
+    if (t.root.parentNode !== S.body) S.body.prepend(t.root);
+  } else if (t.root.parentNode !== document.body) {
+    document.body.append(t.root);
+  }
 }
 
 // for tests and the harness: ?sheet=open does the same at load
@@ -1124,9 +1143,11 @@ function toggleTasks() {
   t.open = !t.open;
   if (!t.open) t.pendingFocus = null;
   const state = U.last && U.last.state;
-  if (!state) { paintTasksOpen(); return; }
+  if (!state) { paintTasksOpen(); if (U.phone && !U.land) sheetMeasure(); return; }
   renderTasks(state);
   if (U.panel) renderPanel(state, U.last.opts);
+  // Opening/closing Tasks in the peek changes peek height; remeasure travel/vis.
+  if (U.phone && !U.land) sheetMeasure();
 }
 
 function pickTaskTab(tab) {
@@ -1497,7 +1518,11 @@ function renderTeam(state, floor, o) {
     setCls(c.btn, 'is-task-dim', !!(hit && !hit.has(id)));
     if (U.tasks && U.tasks.pendingFocus === id) {
       U.tasks.pendingFocus = null;
-      try { c.btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* the card is not on screen yet */ }
+      // On phones, skip scrollIntoView: scrolling the sheet body can push the Tasks dock
+      // (parked in the peek / first in the column) out of the sheet viewport.
+      if (!U.phone) {
+        try { c.btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch { /* the card is not on screen yet */ }
+      }
     }
     setAttr(c.btn, 'aria-label', (bot.name || id) + ', ' + statusLabel(s) + ', ' + seenText(bot));
     setAttr(c.btn, 'title', (bot.name || id) + ': ' + statusLabel(s) + (bot.step ? '. ' + bot.step : '') + ' · ' + seenText(bot));
