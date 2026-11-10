@@ -13,18 +13,6 @@ export const STATUS_ALIASES = {
   '秘书组 · 成稿': 'Draft · Exec',
 };
 
-export const RECENT_MS = 48 * 3600e3;
-export const STEP_MAX = 80;
-
-const TASK_TABS = ['current', 'needs_input', 'recent'];
-
-const HKT = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Asia/Hong_Kong',
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
-});
-
 export function canonicalBotName(name, aliases = STATUS_ALIASES) {
   if (typeof name !== 'string') return '';
   const trimmed = name.trim();
@@ -57,109 +45,6 @@ export function lineKeys(line) {
     source: `${src} ${id}`,
     line: `${time} ${message}`,
     hash: sourceHash(src, line ? line.id : '', time, message),
-  };
-}
-
-export function clipStep(step, max = STEP_MAX) {
-  const s = step == null ? '' : String(step);
-  const chars = Array.from(s);
-  if (chars.length <= max) return s;
-  return chars.slice(0, max).join('');
-}
-
-export function formatHKT(ms) {
-  if (ms == null || !Number.isFinite(ms)) return '';
-  return HKT.format(new Date(ms));
-}
-
-const EMPTY = {
-  current: 'No one is working right now.',
-  needs_input: 'No one needs your input.',
-  recent: 'Nothing finished in the last 48 hours.',
-};
-
-export function taskBadge(status) {
-  if (status === 'working') return 'Working';
-  if (status === 'waiting_user') return 'Needs input';
-  if (status === 'error') return 'Error';
-  if (status === 'done') return 'Done';
-  return status ? String(status) : '';
-}
-
-/**
- * Current / Needs input / Recent rows from real status only.
- * Needs input is waiting_user plus error: the assistant is blocked, not asking for approval.
- * Recent is done events in the last 48 hours. Nothing is invented.
- */
-export function taskView(state, { tab = 'current', now = Date.now(), rosterCount } = {}) {
-  const which = TASK_TABS.includes(tab) ? tab : 'current';
-  const bots = state && state.bots && typeof state.bots === 'object' ? Object.values(state.bots) : [];
-  const working = bots.filter((b) => (b.effective_status || b.status) === 'working');
-  const needs = bots.filter((b) => {
-    const s = b.effective_status || b.status;
-    return s === 'waiting_user' || s === 'error';
-  });
-  const recentCut = now - RECENT_MS;
-  const recent = [];
-  const seen = new Set();
-  const feed = Array.isArray(state && state.feed) ? state.feed : [];
-  for (const ev of feed) {
-    if (!ev || ev.status !== 'done') continue;
-    const ms = parseTime(ev.t);
-    if (ms == null || ms < recentCut || ms > now + 60e3) continue;
-    const key = `${ev.bot}|${ms}|${ev.step || ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    recent.push(ev);
-  }
-  const rows = which === 'needs_input'
-    ? needs.map((b) => botRow(b)).sort(byMsDesc)
-    : which === 'recent'
-      ? recent.map((ev) => feedRow(ev, state))
-      : working.map((b) => botRow(b)).sort(byMsDesc);
-  const count = Number.isFinite(rosterCount) ? rosterCount : bots.length;
-  return {
-    tab: which,
-    rosterCount: count,
-    working: working.length,
-    needs: needs.length,
-    recent: recent.length,
-    stats: `${count} assistants · ${working.length} working · ${needs.length} need your input`,
-    source: 'Live statuses',
-    empty: EMPTY[which],
-    rows,
-  };
-}
-
-function byMsDesc(a, b) {
-  return (b.ms || 0) - (a.ms || 0) || String(a.name).localeCompare(String(b.name));
-}
-
-function botRow(bot) {
-  const ms = parseTime(bot.last_event);
-  const status = bot.effective_status || bot.status || 'idle';
-  return {
-    id: bot.id,
-    name: bot.name || bot.id,
-    step: clipStep(bot.step || ''),
-    status,
-    badge: taskBadge(status),
-    time: formatHKT(ms),
-    ms: ms || 0,
-  };
-}
-
-function feedRow(ev, state) {
-  const ms = parseTime(ev.t);
-  const bot = state && state.bots ? state.bots[ev.bot] : null;
-  return {
-    id: ev.bot,
-    name: (bot && bot.name) || ev.name || ev.bot,
-    step: clipStep(ev.step || ''),
-    status: 'done',
-    badge: 'Done',
-    time: formatHKT(ms),
-    ms: ms || 0,
   };
 }
 

@@ -1,7 +1,8 @@
 /**
- * Phone Tasks entrance: collapsed sheet must keep the toggle in-viewport and
- * openable via a REAL pointer hit-test (elementFromPoint + mouse click at
- * coordinates). dispatchEvent / element.click() alone is NOT accepted as proof.
+ * The office Tasks & Decisions surface is gone.
+ * At 320, 390, and 1280 there is no toggle, no tab strip, no task list, and no
+ * peek parking. Floors, assistant rows, the activity feed, the phone sheet, and
+ * the #hq-… deep link still work.
  *
  * Run: node --test web/test/phone-tasks-entrance.test.mjs
  */
@@ -14,9 +15,13 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '../..');
 const webRoot = path.resolve(here, '..');
 const artifacts = path.join(here, 'artifacts');
 fs.mkdirSync(artifacts, { recursive: true });
+
+const TOPIC = 'hq-Mxlj1TVQyC7fwI32fboWAErb';
+const FLOORS = ['Main', 'Black House', 'Exec', 'KVideo', 'DET'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -26,15 +31,16 @@ const MIME = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.woff2': 'font/woff2',
+  '.glb': 'model/gltf-binary',
 };
 
 function startServer() {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
     let rel = decodeURIComponent(url.pathname);
-    if (rel === '/') rel = '/ui/harness.html';
-    const file = path.normalize(path.join(webRoot, rel));
-    if (!file.startsWith(webRoot) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    if (rel === '/') rel = '/web/ui/harness.html';
+    const file = path.normalize(path.join(repoRoot, rel));
+    if (!file.startsWith(repoRoot) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       res.writeHead(404); res.end('not found'); return;
     }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
@@ -45,6 +51,14 @@ function startServer() {
   });
 }
 
+function launchBrowser() {
+  return chromium.launch({
+    headless: true,
+    channel: 'chrome',
+    args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'],
+  });
+}
+
 async function openHarness(browser, server, viewport) {
   const port = server.address().port;
   const page = await browser.newPage({
@@ -52,164 +66,113 @@ async function openHarness(browser, server, viewport) {
     deviceScaleFactor: 2,
     hasTouch: viewport.width <= 600,
   });
-  const url = `http://127.0.0.1:${port}/ui/harness.html?still&shot&live=0&open=none`;
+  const url = `http://127.0.0.1:${port}/web/ui/harness.html?still&shot&live=0&open=none`;
   await page.goto(url, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.bhq-tasks-toggle');
+  await page.waitForSelector('.bhq-floor');
   await page.waitForTimeout(250);
   return page;
 }
 
-/** Geometry + real topmost-element probe. Never uses element.click() as proof. */
-async function probeToggle(page) {
+/** DOM proof that the Tasks surface is not rendered and did not leave an empty slot. */
+async function tasksGone(page) {
   return page.evaluate(() => {
-    const toggle = document.querySelector('.bhq-tasks-toggle');
-    const tasks = document.querySelector('.bhq-tasks');
-    const body = document.querySelector('.bhq-sbody');
-    const sheet = document.querySelector('.bhq-sheet');
-    if (!toggle || !tasks) return { ok: false, reason: 'missing toggle' };
-    const r = toggle.getBoundingClientRect();
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
-    const top = document.elementFromPoint(cx, cy);
-    const hitToggle = !!(top && top.closest && top.closest('.bhq-tasks-toggle'));
-    const inViewport =
-      r.width > 0 && r.height > 0
-      && r.top >= -0.5 && r.left >= -0.5
-      && r.bottom <= window.innerHeight + 0.5
-      && r.right <= window.innerWidth + 0.5;
-    const underInert = !!(toggle.closest('[inert]') || (body && body.inert && body.contains(toggle)));
+    const text = document.body.innerText || '';
+    const phone = document.documentElement.classList.contains('bhq-phone');
+    const tasks = document.querySelector('.bhq-tasks, .bhq-tasks-toggle, .bhq-tasks-tab, .bhq-tasks-row, #bhq-tasks-panel');
+    const headings = /Tasks & Decisions|任務與決策|任务与決策|Task filters/.test(text);
+    const liveNote = /Live statuses/.test(text);
+    const peek = document.querySelector('.bhq-speek');
+    let peekSlack = null;
+    let extras = [];
+    if (phone && peek) {
+      const grab = peek.querySelector('.bhq-sgrab');
+      const head = peek.querySelector('.bhq-thead');
+      const ph = peek.getBoundingClientRect().height;
+      const used = (grab ? grab.getBoundingClientRect().height : 0) + (head ? head.getBoundingClientRect().height : 0);
+      peekSlack = Math.round((ph - used) * 10) / 10;
+      extras = [...peek.children].map((el) => el.className).filter((c) => !/bhq-sgrab|bhq-shead/.test(String(c)));
+    }
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight - 48;
+    const hit = document.elementFromPoint(cx, cy);
+    const r = hit ? hit.getBoundingClientRect() : null;
+    const wideBottomBar = !phone && !!(hit && r && r.width > window.innerWidth * 0.35 && r.bottom > window.innerHeight - 90 && !hit.closest('#scene') && hit.id !== 'scene');
     return {
-      ok: true,
-      phone: document.documentElement.classList.contains('bhq-phone'),
-      sheetOpen: !!(sheet && sheet.classList.contains('is-open')),
-      parentClass: tasks.parentElement ? tasks.parentElement.className : null,
-      inPeek: !!(tasks.closest && tasks.closest('.bhq-speek')),
-      underInert,
-      inViewport,
-      hitToggle,
-      hitTag: top ? (top.className || top.tagName) : null,
-      expanded: toggle.getAttribute('aria-expanded'),
-      bodyOpen: !document.querySelector('.bhq-tasks-body')?.hasAttribute('hidden'),
-      cx, cy,
-      rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right, w: r.width, h: r.height },
-      vw: window.innerWidth, vh: window.innerHeight,
+      tasks: !!tasks, headings, liveNote, peekSlack, extras, wideBottomBar,
+      hit: hit ? (hit.id || hit.className || hit.tagName) : null,
+      phone,
     };
   });
 }
 
-/** Real mouse press at the toggle center — not locator.click() / element.click(). */
-async function realTapToggle(page, probe) {
-  await page.mouse.move(probe.cx, probe.cy);
-  await page.mouse.down();
-  await page.mouse.up();
-}
-
-async function tabMetrics(page) {
+async function feedAlive(page) {
   return page.evaluate(() => {
-    const tabs = [...document.querySelectorAll('.bhq-tasks-tab')];
-    return tabs.map((btn) => {
-      const r = btn.getBoundingClientRect();
-      const style = getComputedStyle(btn);
-      return {
-        text: btn.textContent.trim(),
-        on: btn.classList.contains('is-on'),
-        w: r.width,
-        h: r.height,
-        flexGrow: style.flexGrow,
-        justify: style.justifyContent,
-        overflow: (btn.scrollWidth - btn.clientWidth) > 1,
-        // pill should not stretch far beyond the label: compare content width vs button
-        padX: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
-      };
-    });
+    const feed = document.querySelector('#feed');
+    if (!feed) return { ok: false };
+    return {
+      ok: true,
+      rows: feed.querySelectorAll('.bhq-frow').length,
+      label: feed.querySelector('.bhq-fhead')?.textContent?.trim() || '',
+    };
   });
 }
 
-test('phone collapsed Tasks entrance is in-viewport and opens via real hit-test (390 and 320)', async (t) => {
+test('source no longer builds a Tasks dock', () => {
+  const ui = fs.readFileSync(path.join(webRoot, 'ui/ui.js'), 'utf8');
+  const css = fs.readFileSync(path.join(webRoot, 'ui/ui.css'), 'utf8');
+  const office = fs.readFileSync(path.join(webRoot, 'lib/office.js'), 'utf8');
+  for (const [name, src] of [['ui.js', ui], ['ui.css', css], ['office.js', office]]) {
+    assert.equal(/placePhoneTasks|bhq-tasks|taskView|Tasks & Decisions|任務與決策/.test(src), false, name);
+  }
+});
+
+test('deep link hash still names both mailboxes', async () => {
+  const { feedFromHash } = await import('../feed.js');
+  const f = feedFromHash(`#${TOPIC}`, '');
+  assert.equal(f.topic, TOPIC);
+  assert.deepEqual(f.servers, ['https://relay.0xcodila.com', 'https://ntfy.sh']);
+});
+
+test('harness office has no Tasks chrome at 320, 390, and 1280', async (t) => {
   const server = await startServer();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchBrowser();
   t.after(async () => { await browser.close(); server.close(); });
 
   for (const vp of [
-    { width: 390, height: 844, name: '390' },
     { width: 320, height: 568, name: '320' },
+    { width: 390, height: 844, name: '390' },
+    { width: 1280, height: 800, name: '1280' },
   ]) {
     await t.test(`${vp.name}×${vp.height}`, async () => {
       const page = await openHarness(browser, server, vp);
-      const before = await probeToggle(page);
-
-      assert.equal(before.phone, true, 'phone mode');
-      assert.equal(before.sheetOpen, false, 'sheet starts collapsed');
-      assert.equal(before.inPeek, true, 'Tasks parked in peek, not inert body');
-      assert.equal(before.underInert, false, 'toggle must not sit under inert');
-      assert.equal(before.inViewport, true, `toggle in viewport: ${JSON.stringify(before.rect)}`);
-      assert.equal(before.hitToggle, true, `elementFromPoint must hit toggle, got ${before.hitTag}`);
-      assert.equal(before.expanded, 'false');
-
-      // Forbidden as sole evidence: element.click() / dispatchEvent. Use coordinate mouse.
-      await realTapToggle(page, before);
-      await page.waitForTimeout(200);
-
-      const after = await probeToggle(page);
-      assert.equal(after.expanded, 'true', 'real tap must open Tasks');
-      assert.equal(after.bodyOpen, true, 'tasks body visible after real tap');
-
-      // Open Tasks → tabs hug labels (not equal 3-col stretch).
-      const tabs = await tabMetrics(page);
-      assert.equal(tabs.length, 3);
-      for (const tab of tabs) {
-        assert.equal(tab.flexGrow, '0', `${tab.text} must not flex-grow equally`);
-        assert.equal(tab.overflow, false, `${tab.text} must not truncate`);
-        if (tab.on) {
-          assert.ok(tab.w < vp.width * 0.55, `active pill for ${tab.text} must not stretch hugely (${tab.w}px)`);
-        }
+      const gone = await tasksGone(page);
+      assert.equal(gone.tasks, false, 'no Tasks nodes');
+      assert.equal(gone.headings, false, 'no Tasks & Decisions heading');
+      assert.equal(gone.liveNote, false, 'no Live statuses note');
+      const floors = await page.locator('.bhq-floor').count();
+      assert.ok(floors >= 2, 'floor controls still render');
+      const feed = await feedAlive(page);
+      assert.equal(feed.ok, true, 'activity feed node still exists');
+      assert.equal(feed.label, 'Activity');
+      assert.ok(feed.rows > 0, 'activity feed has rows');
+      if (vp.width <= 600) {
+        assert.equal(gone.phone, true);
+        assert.ok(gone.peekSlack != null && gone.peekSlack < 16, `peek has no hollow Tasks slot (${gone.peekSlack}px)`);
+        assert.deepEqual(gone.extras, [], 'peek holds only the grabber and floor head');
+      } else {
+        assert.equal(gone.phone, false);
+        assert.equal(gone.wideBottomBar, false, `bottom center is the scene, hit ${gone.hit}`);
       }
-      // "Needs input" should sit near "Recent" — no huge dead gap from equal columns.
-      const needs = tabs.find((x) => x.text === 'Needs input');
-      const recent = tabs.find((x) => x.text === 'Recent');
-      assert.ok(needs && recent);
-      // With hug layout, Recent is only a small gap after Needs input (not ~1/3 viewport away).
-      const gapHint = await page.evaluate(() => {
-        const a = document.getElementById('bhq-tab-needs_input').getBoundingClientRect();
-        const b = document.getElementById('bhq-tab-recent').getBoundingClientRect();
-        return b.left - a.right;
-      });
-      assert.ok(gapHint >= 0 && gapHint < 40, `gap after Needs input toward Recent should be compact, got ${gapHint}`);
-
-      await page.screenshot({ path: path.join(artifacts, `after-tasks-open-${vp.name}.png`) });
+      const members = await page.locator('.bhq-member').count();
+      assert.ok(members > 0, 'assistant rows still render');
       await page.close();
     });
   }
 });
 
-test('desktop 1280 Tasks dock unchanged in placement (body, not peek)', async (t) => {
+test('phone sheet, floor chips, feed, and bot card still open', async (t) => {
   const server = await startServer();
-  const browser = await chromium.launch({ headless: true });
-  t.after(async () => { await browser.close(); server.close(); });
-
-  const page = await openHarness(browser, server, { width: 1280, height: 800 });
-  const info = await page.evaluate(() => {
-    const tasks = document.querySelector('.bhq-tasks');
-    const tabs = [...document.querySelectorAll('.bhq-tasks-tab')].map((b) => getComputedStyle(b).flexGrow);
-    return {
-      phone: document.documentElement.classList.contains('bhq-phone'),
-      parent: tasks.parentElement && tasks.parentElement.tagName,
-      inPeek: !!(tasks.closest && tasks.closest('.bhq-speek')),
-      flexGrows: tabs,
-    };
-  });
-  assert.equal(info.phone, false);
-  assert.equal(info.inPeek, false);
-  assert.equal(info.parent, 'BODY');
-  // Desktop keeps equal-ish flex tabs (flex-grow 1).
-  assert.ok(info.flexGrows.every((g) => g === '1'), `desktop tabs keep flex-grow 1, got ${info.flexGrows}`);
-  await page.screenshot({ path: path.join(artifacts, 'after-tasks-1280.png') });
-  await page.close();
-});
-
-test('drawer close, floors chips, and bot card still work on phone', async (t) => {
-  const server = await startServer();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchBrowser();
   t.after(async () => { await browser.close(); server.close(); });
 
   const page = await openHarness(browser, server, { width: 390, height: 844 });
@@ -223,38 +186,47 @@ test('drawer close, floors chips, and bot card still work on phone', async (t) =
     await page.waitForFunction((want) => {
       const S = document.querySelector('.bhq-sheet');
       if (!S || S.classList.contains('is-open') !== want) return false;
-      const t = S.style.transform || '';
-      // Chromium serializes as translate3d(0px, Npx, 0px).
-      const m = /translate3d\(\s*[-0-9.]+(?:px)?,\s*([-0-9.]+)px/i.exec(t);
+      const tr = S.style.transform || '';
+      const m = /translate3d\(\s*[-0-9.]+(?:px)?,\s*([-0-9.]+)px/i.exec(tr);
       if (!m) return false;
       const y = Math.abs(parseFloat(m[1]));
       return want ? y < 2 : y > 40;
     }, open, { timeout: 5000 });
   };
 
-  // Open sheet via grabber tap (peek drag end without move). Re-query coords after each move.
   let grab = await grabCenter();
   await page.mouse.click(grab.x, grab.y);
   await waitSheet(true);
 
-  // Close sheet again (grab has moved with the sheet).
+  const feedHit = await page.evaluate(() => {
+    const feed = document.querySelector('#feed');
+    const body = document.querySelector('.bhq-sbody');
+    if (!feed || !body || !body.contains(feed)) return { ok: false };
+    return {
+      ok: true,
+      rows: feed.querySelectorAll('.bhq-frow').length,
+      label: feed.querySelector('.bhq-fhead')?.textContent?.trim() || '',
+    };
+  });
+  assert.equal(feedHit.ok, true, 'activity feed sits in the open sheet');
+  assert.equal(feedHit.label, 'Activity');
+  assert.ok(feedHit.rows > 0, 'activity feed has rows');
+
   grab = await grabCenter();
   await page.mouse.click(grab.x, grab.y);
   await waitSheet(false);
 
-  // Floor chip is tappable (use a chip that is on-screen; the row scrolls).
   const floor = await page.evaluate(() => {
     const btn = [...document.querySelectorAll('.bhq-floor')].find((b) => {
       const r = b.getBoundingClientRect();
-      return r.left >= 0 && r.right <= window.innerWidth;
+      return r.left >= 0 && r.right <= window.innerWidth && r.width > 20;
     }) || document.querySelector('.bhq-floor');
     const r = btn.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2, label: btn.textContent.slice(0, 40) };
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   });
   await page.mouse.click(floor.x, floor.y);
   await page.waitForTimeout(150);
 
-  // Open a bot card from the open sheet team list.
   grab = await grabCenter();
   await page.mouse.click(grab.x, grab.y);
   await waitSheet(true);
@@ -262,12 +234,9 @@ test('drawer close, floors chips, and bot card still work on phone', async (t) =
     const body = document.querySelector('.bhq-sbody');
     const btn = document.querySelector('.bhq-member');
     if (!btn || !body) return null;
-    // Scroll the sheet body, not the page — Tasks stays parked in the peek.
     const br = btn.getBoundingClientRect();
     const sr = body.getBoundingClientRect();
-    if (br.top < sr.top || br.bottom > sr.bottom) {
-      body.scrollTop += br.top - sr.top - 8;
-    }
+    if (br.top < sr.top || br.bottom > sr.bottom) body.scrollTop += br.top - sr.top - 8;
     const r = btn.getBoundingClientRect();
     const x = r.left + r.width / 2;
     const y = r.top + r.height / 2;
@@ -278,9 +247,9 @@ test('drawer close, floors chips, and bot card still work on phone', async (t) =
       inView: r.top >= 0 && r.bottom <= window.innerHeight,
     };
   });
-  assert.ok(member, 'team member row present when sheet open');
-  assert.equal(member.inView, true, 'member must be in viewport before tap');
-  assert.equal(member.hit, true, 'elementFromPoint must hit member');
+  assert.ok(member, 'assistant row present when the sheet is open');
+  assert.equal(member.inView, true);
+  assert.equal(member.hit, true);
   await page.mouse.click(member.x, member.y);
   await page.waitForTimeout(400);
   const cardVisible = await page.evaluate(() => {
@@ -288,9 +257,86 @@ test('drawer close, floors chips, and bot card still work on phone', async (t) =
     const panel = document.getElementById('panel');
     return !!(card && !card.hidden && panel && getComputedStyle(panel).display !== 'none');
   });
-  // Panel mode switches to card; sheet goes is-away.
   const away = await page.evaluate(() => document.querySelector('.bhq-sheet').classList.contains('is-away'));
-  assert.equal(away, true, 'sheet yields to bot card');
+  assert.equal(away, true, 'sheet yields to the bot card');
   assert.equal(cardVisible, true, 'bot card visible');
+  const stillGone = await tasksGone(page);
+  assert.equal(stillGone.tasks, false);
   await page.close();
+});
+
+test('live office with the hq deep link has the scene, five floors, feed, and no Tasks panel', { timeout: 240000 }, async (t) => {
+  const server = await startServer();
+  const browser = await launchBrowser();
+  t.after(async () => { await browser.close(); server.close(); });
+  const port = server.address().port;
+
+  for (const vp of [
+    { width: 320, height: 568, name: '320' },
+    { width: 390, height: 844, name: '390' },
+    { width: 1280, height: 800, name: '1280' },
+  ]) {
+    await t.test(`${vp.name}×${vp.height}`, async () => {
+      const page = await browser.newPage({
+        viewport: { width: vp.width, height: vp.height },
+        deviceScaleFactor: 2,
+        hasTouch: vp.width <= 600,
+      });
+      const hits = [];
+      page.on('request', (req) => {
+        const u = req.url();
+        if (u.includes(TOPIC)) hits.push(u);
+      });
+      try {
+      await page.goto(`http://127.0.0.1:${port}/web/index.html#${TOPIC}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('#scene canvas', { state: 'attached', timeout: 45000 });
+      await page.waitForFunction((names) => {
+        const labels = [...document.querySelectorAll('.bhq-fname')].map((el) => el.textContent.trim());
+        return names.every((n) => labels.some((label) => label === n || label.startsWith(n)));
+      }, FLOORS, { timeout: 90000 });
+      await page.waitForFunction(() => {
+        const rows = document.querySelectorAll('#feed .bhq-frow');
+        const members = document.querySelectorAll('.bhq-member');
+        return rows.length > 0 && members.length > 0;
+      }, null, { timeout: 20000 });
+      // Let the first elevator settle so the building is in frame.
+      await page.waitForTimeout(1600);
+      const gone = await tasksGone(page);
+      assert.equal(gone.tasks, false);
+      assert.equal(gone.headings, false);
+      assert.equal(gone.liveNote, false);
+      if (vp.width <= 600) {
+        assert.ok(gone.peekSlack != null && gone.peekSlack < 16, `peek slack ${gone.peekSlack}`);
+        assert.deepEqual(gone.extras, []);
+      } else {
+        assert.equal(gone.wideBottomBar, false, `bottom center hit ${gone.hit}`);
+      }
+      const info = await page.evaluate((names) => {
+        const labels = [...document.querySelectorAll('.bhq-fname')].map((el) => el.textContent.trim());
+        const canvas = document.querySelector('#scene canvas');
+        return {
+          hash: location.hash,
+          labels,
+          members: document.querySelectorAll('.bhq-member').length,
+          feed: (document.querySelector('#feed')?.innerText || '').slice(0, 120),
+          canvas: !!(canvas && canvas.width > 0 && canvas.height > 0),
+          matched: names.filter((n) => labels.some((label) => label === n || label.startsWith(n))),
+        };
+      }, FLOORS);
+      assert.equal(info.hash, `#${TOPIC}`);
+      assert.deepEqual(info.matched, FLOORS);
+      assert.ok(info.members > 0, 'assistant chips/rows present');
+      const feed = await feedAlive(page);
+      assert.equal(feed.label, 'Activity');
+      assert.ok(feed.rows > 0, 'live feed has rows');
+      assert.equal(info.canvas, true, '3D scene canvas has pixels');
+      assert.ok(hits.some((u) => u.includes('relay.0xcodila.com') && u.includes(TOPIC)), 'deep link still reads the relay');
+      assert.ok(hits.some((u) => u.includes('ntfy.sh') && u.includes(TOPIC)), 'deep link still reads ntfy');
+      const shot = path.join(artifacts, `office-no-tasks-${vp.name}.png`);
+      await page.screenshot({ path: shot, fullPage: false });
+      } finally {
+        await page.close();
+      }
+    });
+  }
 });

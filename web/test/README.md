@@ -1,13 +1,13 @@
 # Web UI browser tests
 
-Phone Tasks entrance hit-test (Playwright). From this directory:
+Office UI checks (Playwright, system Chrome). From this directory:
 
 ```bash
 npm install
 npm run test:phone-tasks
-# optional screenshots: node capture-tasks-shots.mjs before|after
 ```
 
-`phone-tasks-entrance.test.mjs` proves the collapsed Tasks toggle is in-viewport and
-opens via a real coordinate mouse hit-test (`elementFromPoint` + `page.mouse`), not
-`element.click()` / `dispatchEvent` alone.
+`phone-tasks-entrance.test.mjs` proves the Tasks & Decisions dock is not rendered
+(no toggle, tab strip, task list, or phone peek parking) at 320, 390, and 1280,
+and that floors, assistant rows, the activity feed, the phone sheet, and the
+`#hq-…` deep link still work. Screenshots land in `artifacts/office-no-tasks-*.png`.
