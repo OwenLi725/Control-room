@@ -1,0 +1,12 @@
+{
+  "name": "control-room-web-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:phone-tasks": "node --test phone-tasks-entrance.test.mjs",
+    "shots": "node capture-tasks-shots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}
