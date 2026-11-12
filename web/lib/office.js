@@ -11,13 +11,38 @@ export const STATUS_ALIASES = {
   'DET B2B Analyst': 'B2B Analyst · DET',
   'DET Marketing': 'Marketing · DET',
   '秘书组 · 成稿': 'Draft · Exec',
+  'Eng · Black House': 'Ryan · Eng · DR',
+  'Product · Black House': 'Helen · PM · DR',
+  'Design · Black House': 'Elise · Design · DR',
+  'QA · Black House': 'Tess · QA · DR',
+  'Michael · Black House': 'Michael · Dir · DR',
+  'Michael · Dir · BH': 'Michael · Dir · DR',
+  'Kelly · Exec': 'Kelly · CoS · Exec',
+  'HR · Exec': 'Lauren · HR Dir · Exec',
+  'GM · DET': 'Victor · GM · DET',
+  'Numbers · DET': 'Nathan · Data · DET',
+  'Comms · DET': 'Sophie · Comms · DET',
+  'Studio · DET': 'Maya · Brand · DET',
+  'Intel · DET': 'Ivan · Intel · DET',
+  'Briefs · Exec · 个人简报': 'Clara · Briefs · Exec',
+  'Codex · Exec': 'Felix · Tech · Exec',
+  'Butler · Exec': 'Hugo · Butler · Exec',
 };
 
 export function canonicalBotName(name, aliases = STATUS_ALIASES) {
   if (typeof name !== 'string') return '';
-  const trimmed = name.trim();
+  let trimmed = name.trim();
   if (!trimmed) return '';
-  return aliases[trimmed] || trimmed;
+  const seen = new Set();
+  while (Object.prototype.hasOwnProperty.call(aliases, trimmed)) {
+    if (seen.has(trimmed)) return trimmed;
+    seen.add(trimmed);
+    const next = aliases[trimmed];
+    if (typeof next !== 'string') return '';
+    trimmed = next.trim();
+    if (!trimmed) return '';
+  }
+  return trimmed;
 }
 
 /** Stable hex digest. Objects and missing parts become empty; it does not throw. */

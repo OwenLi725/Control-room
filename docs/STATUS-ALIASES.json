@@ -1,0 +1,27 @@
+{
+  "aliases": {
+    "DET 總管": "GM · DET",
+    "DET WhatsApp PA": "WhatsApp PA · DET",
+    "DET Inbox PA": "Inbox PA · DET",
+    "DET B2B Analyst": "B2B Analyst · DET",
+    "DET Marketing": "Marketing · DET",
+    "秘书组 · 成稿": "Draft · Exec",
+    "Eng · Black House": "Ryan · Eng · DR",
+    "Product · Black House": "Helen · PM · DR",
+    "Design · Black House": "Elise · Design · DR",
+    "QA · Black House": "Tess · QA · DR",
+    "Michael · Black House": "Michael · Dir · DR",
+    "Michael · Dir · BH": "Michael · Dir · DR",
+    "Kelly · Exec": "Kelly · CoS · Exec",
+    "HR · Exec": "Lauren · HR Dir · Exec",
+    "GM · DET": "Victor · GM · DET",
+    "Numbers · DET": "Nathan · Data · DET",
+    "Comms · DET": "Sophie · Comms · DET",
+    "Studio · DET": "Maya · Brand · DET",
+    "Intel · DET": "Ivan · Intel · DET",
+    "Briefs · Exec · 个人简报": "Clara · Briefs · Exec",
+    "Codex · Exec": "Felix · Tech · Exec",
+    "Butler · Exec": "Hugo · Butler · Exec"
+  },
+  "note": "exact observed legacy status names only; unknown must not materialize. A chain of aliases resolves to the locked roster name."
+}
